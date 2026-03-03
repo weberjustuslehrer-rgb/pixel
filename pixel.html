@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Klick-Zoom – gleiche Größe</title>
+<style>
+  body{
+    margin:0;
+    font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+    background:#f4f6fb;
+    padding:20px;
+  }
+  h1{ font-size:18px; margin:0 0 8px; }
+  .hint{ font-size:13px; color:#666; margin-bottom:14px; }
+
+  .row{
+    display:flex;
+    gap:20px;
+    flex-wrap:wrap;
+    align-items:flex-start;
+  }
+  .panel{
+    width: 420px;   /* feste Anzeigegröße */
+  }
+  .title{
+    font-size:13px;
+    color:#666;
+    margin:0 0 6px;
+  }
+  canvas{
+    width: 420px;   /* gleiche Anzeigegröße links/rechts */
+    height: 420px;
+    border:1px solid #ddd;
+    background:#fff;
+    display:block;
+  }
+  #zoomCanvas{
+    image-rendering: pixelated; /* WICHTIG: Pixelblöcke */
+  }
+</style>
+</head>
+<body>
+
+<h1>Klick-Zoom</h1>
+<div class="hint">Bild laden → links klicken → rechts erscheint dann der vergrößerte Ausschnitt.</div>
+
+<input type="file" id="file" accept="image/png,image/jpeg">
+
+<div class="row">
+  <div class="panel">
+    <div class="title">Original</div>
+    <canvas id="orig"></canvas>
+  </div>
+  <div class="panel">
+    <div class="title">Zoom-Ausschnitt</div>
+    <canvas id="zoom"></canvas>
+  </div>
+</div>
+
+<script>
+const fileInput = document.getElementById("file");
+
+const orig = document.getElementById("orig");
+const octx = orig.getContext("2d");
+
+const zoom = document.getElementById("zoom");
+const zctx = zoom.getContext("2d");
+
+const img = new Image();
+
+// feste Anzeigegröße (Canvas-Pixelauflösung)
+const VIEW = 420;
+
+// Zoom-Einstellungen: Ausschnittgröße in ORIGINAL-PIXELN
+const LENS = 25; // z.B. 25x25 Pixel -> wird auf 420x420 skaliert
+
+// Offscreen-Canvas fürs Original in echter Auflösung
+const off = document.createElement("canvas");
+const offCtx = off.getContext("2d", { willReadFrequently:true });
+
+let iw=0, ih=0;      // Originalgröße
+let drawW=0, drawH=0; // eingepasste Größe im VIEW-Canvas
+let offX=0, offY=0;   // Offset (Letterboxing)
+
+// Bild in feste Box einpassen (mit Rand links/rechts/oben/unten)
+function fitIntoView(){
+  const scale = Math.min(VIEW / iw, VIEW / ih);
+  drawW = Math.floor(iw * scale);
+  drawH = Math.floor(ih * scale);
+  offX = Math.floor((VIEW - drawW) / 2);
+  offY = Math.floor((VIEW - drawH) / 2);
+}
+
+function drawOriginal(){
+  orig.width = VIEW; orig.height = VIEW;
+  octx.clearRect(0,0,VIEW,VIEW);
+  octx.fillStyle = "#fff";
+  octx.fillRect(0,0,VIEW,VIEW);
+  octx.imageSmoothingEnabled = true;
+  octx.drawImage(off, 0, 0, iw, ih, offX, offY, drawW, drawH);
+}
+
+// Klickposition im VIEW-Canvas -> Originalpixel (in der echten Bildauflösung)
+function viewToImagePixel(ev){
+  const rect = orig.getBoundingClientRect();
+  const x = (ev.clientX - rect.left) * (VIEW / rect.width);
+  const y = (ev.clientY - rect.top)  * (VIEW / rect.height);
+
+  // Wenn Klick außerhalb des eingepassten Bildbereichs ist, clampen
+  const cx = Math.max(offX, Math.min(offX + drawW - 1, x));
+  const cy = Math.max(offY, Math.min(offY + drawH - 1, y));
+
+  // zurück auf Originalkoordinaten
+  const sx = (cx - offX) / drawW;
+  const sy = (cy - offY) / drawH;
+
+  const px = Math.max(0, Math.min(iw-1, Math.floor(sx * iw)));
+  const py = Math.max(0, Math.min(ih-1, Math.floor(sy * ih)));
+  return { px, py };
+}
+
+function drawZoom(centerX, centerY){
+  zoom.width = VIEW; zoom.height = VIEW;
+  zctx.clearRect(0,0,VIEW,VIEW);
+
+  // Ausschnitt im Original bestimmen
+  const half = Math.floor(LENS / 2);
+  const sx = Math.max(0, Math.min(iw - LENS, centerX - half));
+  const sy = Math.max(0, Math.min(ih - LENS, centerY - half));
+
+  // Nearest Neighbour erzwingen
+  zctx.imageSmoothingEnabled = false;
+
+  // Ausschnitt (LENSxLENS) auf VIEWxVIEW skalieren
+  zctx.drawImage(off, sx, sy, LENS, LENS, 0, 0, VIEW, VIEW);
+  
+  // --- Rasterlinien zeichnen, damit Pixel immer sichtbar sind ---
+  const step = VIEW / LENS; // Größe eines Pixels im Zoom in Canvas-Pixeln
+  zctx.save();
+  zctx.strokeStyle = "rgba(0,0,0,0.25)";
+  zctx.lineWidth = 1;
+
+  for(let i=0; i<=LENS; i++){
+    const p = Math.round(i * step) + 0.5; // 0.5 für scharfe Linien
+    zctx.beginPath(); zctx.moveTo(p, 0); zctx.lineTo(p, VIEW); zctx.stroke();
+    zctx.beginPath(); zctx.moveTo(0, p); zctx.lineTo(VIEW, p); zctx.stroke();
+  }
+  zctx.restore();
+}
+
+fileInput.addEventListener("change", e => {
+  const f = e.target.files[0];
+  if(!f) return;
+
+  const reader = new FileReader();
+  reader.onload = ev => {
+    img.onload = () => {
+      iw = img.width; ih = img.height;
+
+      off.width = iw; off.height = ih;
+      offCtx.imageSmoothingEnabled = false;
+      offCtx.drawImage(img, 0, 0);
+
+      fitIntoView();
+      drawOriginal();
+      drawZoom(Math.floor(iw/2), Math.floor(ih/2));
+    };
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(f);
+});
+
+// Klick -> Zoom-Ausschnitt aktualisieren
+orig.addEventListener("click", (ev) => {
+  if(!img.src) return;
+  const { px, py } = viewToImagePixel(ev);
+  drawZoom(px, py);
+});
+</script>
+
+</body>
+</html>
